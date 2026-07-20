@@ -1,6 +1,5 @@
 package dev.jwt.auth.controller;
 
-
 import dev.jwt.auth.dto.request.LoginRequest;
 import dev.jwt.auth.dto.request.RefreshRequest;
 import dev.jwt.auth.dto.request.RegisterRequest;
@@ -12,88 +11,127 @@ import dev.jwt.auth.repository.UserRepository;
 import dev.jwt.auth.service.JwtService;
 import dev.jwt.auth.service.RefreshTokenService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+@Slf4j
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
 public class AuthController {
 
-    @Autowired
     private final AuthenticationManager authenticationManager;
-
-    @Autowired
     private final UserRepository userRepository;
-
-    @Autowired
     private final PasswordEncoder passwordEncoder;
-
-    @Autowired
     private final JwtService jwtService;
-
-    @Autowired
     private final RefreshTokenService refreshTokenService;
 
     @PostMapping("/register")
-    public AuthResponse register(@RequestBody RegisterRequest req) {
-        if (userRepository.existsByUsername(req.username())) {
-            throw new IllegalArgumentException("Username já está em uso");
+    public ResponseEntity<AuthResponse> register(@RequestBody RegisterRequest req) {
+        try {
+            if (userRepository.existsByUsername(req.username())) {
+                return ResponseEntity.badRequest()
+                        .body(new AuthResponse("Username já está em uso", null));
+            }
+            if (userRepository.existsByEmail(req.email())) {
+                return ResponseEntity.badRequest()
+                        .body(new AuthResponse("Email já está em uso", null));
+            }
+
+            User user = User.builder()
+                    .username(req.username())
+                    .email(req.email())
+                    .password(passwordEncoder.encode(req.password()))
+                    .role(req.role() != null ? req.role() : Role.USER)
+                    .build();
+
+            userRepository.save(user);
+
+            String accessToken = jwtService.generateAccessToken(user.getUsername());
+            RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
+
+            return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
+        } catch (Exception e) {
+            log.error("Erro no registo: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthResponse("Erro ao registar utilizador", null));
         }
-        if (userRepository.existsByEmail(req.email())) {
-            throw new IllegalArgumentException("Email já está em uso");
-        }
-
-        User user = User.builder()
-                .username(req.username())
-                .email(req.email())
-                .password(passwordEncoder.encode(req.password()))
-                .role(req.role() != null ? req.role() : Role.USER) // default USER se vier nulo
-                .build();
-
-        userRepository.save(user);
-
-        String accessToken = jwtService.generateAccessToken(user.getUsername());
-        RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
-
-        return new AuthResponse(accessToken, refreshToken.getToken());
     }
 
-
-
     @PostMapping("/login")
-    public AuthResponse login(@RequestBody LoginRequest req) {
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(req.username(), req.password())
-        );
+    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest req) {
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(req.username(), req.password())
+            );
 
-        User user = userRepository.findByUsername(req.username())
-                .orElseThrow(() -> new UsernameNotFoundException("Utilizador não encontrado"));
+            User user = userRepository.findByUsername(req.username())
+                    .orElseThrow(() -> new UsernameNotFoundException("Utilizador não encontrado"));
 
-        String accessToken = jwtService.generateAccessToken(user.getUsername());
-        RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
+            String accessToken = jwtService.generateAccessToken(user.getUsername());
+            RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
 
-        return new AuthResponse(accessToken, refreshToken.getToken());
+            return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
+        } catch (BadCredentialsException e) {
+            log.warn("Tentativa de login falhada para: {}", req.username());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AuthResponse("Credenciais inválidas", null));
+        } catch (Exception e) {
+            log.error("Erro no login: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthResponse("Erro ao fazer login", null));
+        }
     }
 
     @PostMapping("/refresh")
-    public AuthResponse refresh(@RequestBody RefreshRequest req) {
-        RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
-        User user = storedToken.getUser();
+    public ResponseEntity<AuthResponse> refresh(@RequestBody RefreshRequest req) {
+        try {
+            log.debug("Tentativa de refresh token");
 
-        String newAccessToken = jwtService.generateAccessToken(user.getUsername());
+            // Verifica e obtém o refresh token
+            RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
+            User user = storedToken.getUser();
 
-        // sem rotation: devolve o mesmo refresh token que ainda é válido
-        return new AuthResponse(newAccessToken, storedToken.getToken());
+            // Revoga o refresh token antigo
+            refreshTokenService.revokeByUser(user);
+
+            // Cria um novo refresh token (rotação)
+            RefreshToken newRefreshToken = refreshTokenService.createRefreshToken(user);
+
+            // Gera um novo access token
+            String newAccessToken = jwtService.generateAccessToken(user.getUsername());
+
+            log.debug("Refresh token realizado com sucesso para: {}", user.getUsername());
+
+            return ResponseEntity.ok(new AuthResponse(newAccessToken, newRefreshToken.getToken()));
+        } catch (BadCredentialsException e) {
+            log.warn("Refresh token inválido: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AuthResponse("Refresh token inválido ou expirado", null));
+        } catch (Exception e) {
+            log.error("Erro no refresh token: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthResponse("Erro ao renovar token", null));
+        }
     }
 
     @PostMapping("/logout")
-    public void logout(@RequestBody RefreshRequest req) {
-        RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
-        refreshTokenService.revokeByUser(storedToken.getUser());
+    public ResponseEntity<Void> logout(@RequestBody RefreshRequest req) {
+        try {
+            RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
+            refreshTokenService.revokeByUser(storedToken.getUser());
+            log.debug("Logout realizado com sucesso para: {}", storedToken.getUser().getUsername());
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            log.error("Erro no logout: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
     }
 }
