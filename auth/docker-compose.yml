@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  auth-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: auth-app
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: ${DB_URL}
+      USER_DB: postgres
+      PASSWORD_DB: ${PASSWORD_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      ISSUER: ${ISSUER}
+      SPRING_PROFILES_ACTIVE: prod
+    restart: unless-stopped
+    networks:
+      - auth-network
+
+networks:
+  ndavene-network:
+    driver: bridge
