@@ -3,6 +3,7 @@ FROM maven:3.9.0-eclipse-temurin-17-alpine AS build
 
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV TZ=UTC
 
 WORKDIR /app
 

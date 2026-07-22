@@ -21,6 +21,10 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+
 @Slf4j
 @RestController
 @RequestMapping("/auth")
@@ -32,6 +36,65 @@ public class AuthController {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final RefreshTokenService refreshTokenService;
+
+    private static final DateTimeFormatter FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                    .withZone(ZoneId.of("UTC"));
+
+    @PostMapping("/login")
+    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest req) {
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(req.username(), req.password())
+            );
+
+            User user = userRepository.findByUsername(req.username())
+                    .orElseThrow(() -> new UsernameNotFoundException("Utilizador não encontrado"));
+
+            String accessToken = jwtService.generateAccessToken(user.getUsername());
+            RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
+
+            // LOG DO REFRESH TOKEN
+            log.info("🔐 Login realizado para: {}", user.getUsername());
+            log.info("   📅 Refresh token expira em: {}",
+                    FORMATTER.format(refreshToken.getExpiryDate()));
+
+            return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
+
+        } catch (BadCredentialsException e) {
+            log.warn("❌ Login falhou para: {}", req.username());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AuthResponse("Credenciais inválidas", null));
+        }
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<AuthResponse> refresh(@RequestBody RefreshRequest req) {
+        try {
+            RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
+            User user = storedToken.getUser();
+
+            refreshTokenService.revokeByUser(user);
+            RefreshToken newRefreshToken = refreshTokenService.createRefreshToken(user);
+            String newAccessToken = jwtService.generateAccessToken(user.getUsername());
+
+            // LOG DO NOVO REFRESH TOKEN
+            log.info("🔄 Refresh realizado para: {}", user.getUsername());
+            log.info("   📅 Novo refresh token expira em: {}",
+                    FORMATTER.format(newRefreshToken.getExpiryDate()));
+
+            return ResponseEntity.ok(new AuthResponse(newAccessToken, newRefreshToken.getToken()));
+
+        } catch (BadCredentialsException e) {
+            log.warn("❌ Refresh falhou: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AuthResponse("Refresh token inválido ou expirado", null));
+        } catch (Exception e) {
+            log.error("❌ Erro no refresh: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AuthResponse("Erro ao renovar token", null));
+        }
+    }
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@RequestBody RegisterRequest req) {
@@ -57,81 +120,16 @@ public class AuthController {
             String accessToken = jwtService.generateAccessToken(user.getUsername());
             RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
 
+            log.info("✅ Registro realizado para: {}", user.getUsername());
+            log.info("   📅 Refresh token expira em: {}",
+                    FORMATTER.format(refreshToken.getExpiryDate()));
+
             return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
+
         } catch (Exception e) {
-            log.error("Erro no registo: {}", e.getMessage());
+            log.error("❌ Erro no registro: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new AuthResponse("Erro ao registar utilizador", null));
-        }
-    }
-
-    @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@RequestBody LoginRequest req) {
-        try {
-            authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(req.username(), req.password())
-            );
-
-            User user = userRepository.findByUsername(req.username())
-                    .orElseThrow(() -> new UsernameNotFoundException("Utilizador não encontrado"));
-
-            String accessToken = jwtService.generateAccessToken(user.getUsername());
-            RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
-
-            return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
-        } catch (BadCredentialsException e) {
-            log.warn("Tentativa de login falhada para: {}", req.username());
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new AuthResponse("Credenciais inválidas", null));
-        } catch (Exception e) {
-            log.error("Erro no login: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AuthResponse("Erro ao fazer login", null));
-        }
-    }
-
-    @PostMapping("/refresh")
-    public ResponseEntity<AuthResponse> refresh(@RequestBody RefreshRequest req) {
-        try {
-            log.debug("Tentativa de refresh token");
-
-            // Verifica e obtém o refresh token
-            RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
-            User user = storedToken.getUser();
-
-            // Revoga o refresh token antigo
-            refreshTokenService.revokeByUser(user);
-
-            // Cria um novo refresh token (rotação)
-            RefreshToken newRefreshToken = refreshTokenService.createRefreshToken(user);
-
-            // Gera um novo access token
-            String newAccessToken = jwtService.generateAccessToken(user.getUsername());
-
-            log.debug("Refresh token realizado com sucesso para: {}", user.getUsername());
-
-            return ResponseEntity.ok(new AuthResponse(newAccessToken, newRefreshToken.getToken()));
-        } catch (BadCredentialsException e) {
-            log.warn("Refresh token inválido: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(new AuthResponse("Refresh token inválido ou expirado", null));
-        } catch (Exception e) {
-            log.error("Erro no refresh token: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AuthResponse("Erro ao renovar token", null));
-        }
-    }
-
-    @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@RequestBody RefreshRequest req) {
-        try {
-            RefreshToken storedToken = refreshTokenService.verifyAndGet(req.refreshToken());
-            refreshTokenService.revokeByUser(storedToken.getUser());
-            log.debug("Logout realizado com sucesso para: {}", storedToken.getUser().getUsername());
-            return ResponseEntity.ok().build();
-        } catch (Exception e) {
-            log.error("Erro no logout: {}", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 }
