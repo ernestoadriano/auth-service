@@ -10,8 +10,10 @@ import dev.jwt.auth.entity.User;
 import dev.jwt.auth.repository.UserRepository;
 import dev.jwt.auth.service.JwtService;
 import dev.jwt.auth.service.RefreshTokenService;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -21,21 +23,27 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
 @Slf4j
 @RestController
 @RequestMapping("/auth")
-@RequiredArgsConstructor
 public class AuthController {
 
-    private final AuthenticationManager authenticationManager;
-    private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
-    private final JwtService jwtService;
-    private final RefreshTokenService refreshTokenService;
+    @Autowired
+    private AuthenticationManager authenticationManager;
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private RefreshTokenService refreshTokenService;
 
     private static final DateTimeFormatter FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -55,8 +63,8 @@ public class AuthController {
             RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
 
             // LOG DO REFRESH TOKEN
-            log.info("🔐 Login realizado para: {}", user.getUsername());
-            log.info("   📅 Refresh token expira em: {}",
+            log.info("Login realizado para: {}", user.getUsername());
+            log.info("Refresh token expira em: {}",
                     FORMATTER.format(refreshToken.getExpiryDate()));
 
             return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
@@ -120,8 +128,8 @@ public class AuthController {
             String accessToken = jwtService.generateAccessToken(user.getUsername());
             RefreshToken refreshToken = refreshTokenService.createRefreshToken(user);
 
-            log.info("✅ Registro realizado para: {}", user.getUsername());
-            log.info("   📅 Refresh token expira em: {}",
+            log.info("Registro realizado para: {}", user.getUsername());
+            log.info("Refresh token expira em: {}",
                     FORMATTER.format(refreshToken.getExpiryDate()));
 
             return ResponseEntity.ok(new AuthResponse(accessToken, refreshToken.getToken()));
@@ -130,6 +138,23 @@ public class AuthController {
             log.error("❌ Erro no registro: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new AuthResponse("Erro ao registar utilizador", null));
+        }
+    }
+
+    @PostMapping("/logout")
+    @Transactional
+    public ResponseEntity<Void> logout(@RequestBody RefreshRequest request) {
+        try {
+            RefreshToken storedToken = refreshTokenService.getByToken(request.refreshToken());
+
+            if (storedToken != null) {
+                refreshTokenService.deleteToken(storedToken);
+                log.info("Logout realizado para: {}", storedToken.getUser().getUsername());
+            }
+            return ResponseEntity.ok().build();
+        } catch (Exception exception) {
+            log.error("Erro no logout: {}", exception.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 }

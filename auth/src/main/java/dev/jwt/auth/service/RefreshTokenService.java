@@ -68,4 +68,23 @@ public class RefreshTokenService {
         refreshTokenRepository.deleteByUser(user);
         log.info("Tokens revogados para: {}", user.getUsername());
     }
+
+    public RefreshToken getByToken(String token) {
+        return refreshTokenRepository.findByToken(token)
+                .orElseThrow(() -> new RuntimeException("Refresh Token not found"));
+    }
+
+    public void deleteToken(RefreshToken token) {
+        if (token != null) {
+            log.info("A apagar refresh token para: {}", token.getUser().getUsername());
+            refreshTokenRepository.delete(token);
+        }
+    }
+
+    @Transactional
+    public void deleteByUser(User user) {
+        log.info("A apagar todos os refresh tokens para: {}", user.getUsername());
+        refreshTokenRepository.deleteByUser(user);
+    }
+
 }
